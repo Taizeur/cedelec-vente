@@ -1,13 +1,19 @@
 {
   "name": "cedelec-vente",
   "version": "1.0.0",
-  "description": "Site Cedelec Vente - catalogue d'objets et gestion basique",
+  "description": "Cedelec Vente - annonces avec comptes, admin, uploads et chat",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "bcrypt": "^6.0.0",
+    "connect-sqlite3": "^0.9.16",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "multer": "^2.0.2",
+    "socket.io": "^4.8.1",
+    "sqlite3": "^5.1.7"
   },
   "engines": {
     "node": ">=18 <23"
@@ -15,4 +21,5 @@
   "author": "Taizeur",
   "license": "ISC"
 }
+
 
