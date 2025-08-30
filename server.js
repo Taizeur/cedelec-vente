@@ -125,7 +125,7 @@ function esc(s) {
   return String(s).replace(/[&<>\"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// ---------- Layout (header + footer + CSS) ----------
+// ---------- Layout (header + footer + CSS) + TOAST admin global ----------
 function page(title, content, user) {
   return `
   <!doctype html>
@@ -152,9 +152,41 @@ function page(title, content, user) {
           ${user?.role === "admin" ? ` <a class="btn" href="/admin">Admin</a>` : ""}
         </div>
       </div>
+
       ${content}
+
       <div class="footer">SARL Cedelec – 5 route de Crochte, 59380 Socx</div>
     </div>
+
+    ${user?.role === "admin" ? `
+      <script src="/socket.io/socket.io.js"></script>
+      <script>
+        (function(){
+          if (window.__adminSockReady) return;
+          window.__adminSockReady = true;
+          var s = io();
+          s.on('connect', function(){ s.emit('admin:join'); });
+
+          s.on('admin:new_message', function(evt){
+            try {
+              var wrap = document.createElement('div');
+              wrap.style.position = 'fixed';
+              wrap.style.bottom = '20px';
+              wrap.style.right = '20px';
+              wrap.style.zIndex = '9999';
+              wrap.className = 'card';
+              wrap.style.maxWidth = '320px';
+              wrap.innerHTML =
+                '<div style="font-weight:700;margin-bottom:6px">Nouveau message</div>' +
+                '<div class="muted" style="margin-bottom:8px"><b>' + evt.from_username + '</b> → #'+ evt.conversation_id + '<br>' + (evt.preview || '') + '</div>' +
+                '<div><a class="btn" href="/admin/conversations/' + evt.conversation_id + '">Ouvrir la conversation</a></div>';
+              document.body.appendChild(wrap);
+              setTimeout(function(){ try { wrap.remove(); } catch(e){} }, 7000);
+            } catch(e){}
+          });
+        })();
+      </script>
+    ` : ``}
   </body>
   </html>`;
 }
@@ -353,7 +385,7 @@ app.post("/admin/items/:id/delete", requireAdmin, (req, res) => {
       });
     };
     delMessages(() => {
-      db.run(`DELETE FROM conversations WHERE item_id=?`, [itemId], () => {
+      db.run(`DELETE FROM conversations WHERE item_id=?`, () => {
         db.run(`DELETE FROM items WHERE id=?`, [itemId], () => res.redirect("/admin/items"));
       });
     });
@@ -388,35 +420,36 @@ app.get("/chat/:itemId", requireLogin, (req, res) => {
       </div>
       <script src="/socket.io/socket.io.js"></script>
       <script>
-        const socket = io();
-        const convoId = ${convoId};
-        const room = "convo_" + convoId;
-        socket.emit('join', { room });
+        var socket = io();
+        var convoId = ${convoId};
+        var room = "convo_" + convoId;
+        socket.emit('join', { room: room });
 
         async function loadHistory(){
-          const res = await fetch('/api/conversations/' + convoId + '/messages');
-          const msgs = await res.json();
-          const box = document.getElementById('messages');
+          var res = await fetch('/api/conversations/' + convoId + '/messages');
+          var msgs = await res.json();
+          var box = document.getElementById('messages');
           box.innerHTML = '';
-          for (const m of msgs){
+          for (var i=0;i<msgs.length;i++){
+            var m = msgs[i];
             box.innerHTML += '<p><b>' + (m.sender_name || 'Utilisateur') + ':</b> ' + m.body + '</p>';
           }
           box.scrollTop = box.scrollHeight;
         }
         loadHistory();
 
-        socket.on('message', m=>{
-          const box=document.getElementById('messages');
+        socket.on('message', function(m){
+          var box=document.getElementById('messages');
           box.innerHTML += '<p><b>'+ (m.sender || 'Utilisateur') +':</b> '+m.body+'</p>';
           box.scrollTop = box.scrollHeight;
         });
 
         async function sendMsg(){
-          const input=document.getElementById('msg');
-          const body=input.value.trim(); if(!body) return;
+          var input=document.getElementById('msg');
+          var body=input.value.trim(); if(!body) return;
           await fetch('/api/conversations/' + convoId + '/messages', {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ body })
+            body: JSON.stringify({ body: body })
           });
           input.value='';
         }
@@ -464,36 +497,37 @@ app.get("/conversations/:id", requireLogin, (req, res) => {
       </div>
       <script src="/socket.io/socket.io.js"></script>
       <script>
-        const s = io();
-        const cid = ${cid};
-        const room = "convo_" + cid;
-        s.emit('join', { room });
+        var s = io();
+        var cid = ${cid};
+        var room = "convo_" + cid;
+        s.emit('join', { room: room });
 
         async function loadHistory(){
-          const res = await fetch('/api/conversations/' + cid + '/messages');
-          const msgs = await res.json();
-          const box = document.getElementById('messages');
+          var res = await fetch('/api/conversations/' + cid + '/messages');
+          var msgs = await res.json();
+          var box = document.getElementById('messages');
           box.innerHTML = '';
-          for (const m of msgs){
+          for (var i=0;i<msgs.length;i++){
+            var m = msgs[i];
             box.innerHTML += '<p><b>' + (m.sender_name || 'Utilisateur') + ':</b> ' + m.body + '</p>';
           }
           box.scrollTop = box.scrollHeight;
         }
         loadHistory();
 
-        s.on('message', (m)=>{
-          const div=document.getElementById('messages');
+        s.on('message', function(m){
+          var div=document.getElementById('messages');
           div.innerHTML += '<p><b>'+ (m.sender || 'Utilisateur') +':</b> '+m.body+'</p>';
           div.scrollTop = div.scrollHeight;
         });
 
         async function send(){
-          const input = document.getElementById('msg');
-          const body = input.value.trim(); if(!body) return;
+          var input = document.getElementById('msg');
+          var body = input.value.trim(); if(!body) return;
           input.value='';
           await fetch('/api/conversations/' + cid + '/messages', {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ body })
+            body: JSON.stringify({ body: body })
           });
         }
       </script>
@@ -532,36 +566,37 @@ app.get("/admin/conversations/:id", requireAdmin, (req, res) => {
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script>
-      const s = io();
-      const cid = ${cid};
-      const room = "convo_" + cid;
-      s.emit('join', { room });
+      var s = io();
+      var cid = ${cid};
+      var room = "convo_" + cid;
+      s.emit('join', { room: room });
 
       async function loadHistory(){
-        const res = await fetch('/api/conversations/' + cid + '/messages');
-        const msgs = await res.json();
-        const box = document.getElementById('messages');
+        var res = await fetch('/api/conversations/' + cid + '/messages');
+        var msgs = await res.json();
+        var box = document.getElementById('messages');
         box.innerHTML = '';
-        for (const m of msgs){
+        for (var i=0;i<msgs.length;i++){
+          var m = msgs[i];
           box.innerHTML += '<p><b>' + (m.sender_name || 'Utilisateur') + ':</b> ' + m.body + '</p>';
         }
         box.scrollTop = box.scrollHeight;
       }
       loadHistory();
 
-      s.on('message', (m)=>{
-        const div=document.getElementById('messages');
+      s.on('message', function(m){
+        var div=document.getElementById('messages');
         div.innerHTML += '<p><b>'+ (m.sender || 'Utilisateur') +':</b> '+m.body+'</p>';
         div.scrollTop = div.scrollHeight;
       });
 
       async function send(){
-        const input = document.getElementById('msg');
-        const body = input.value.trim(); if(!body) return;
+        var input = document.getElementById('msg');
+        var body = input.value.trim(); if(!body) return;
         input.value='';
         await fetch('/api/conversations/' + cid + '/messages', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ body })
+          body: JSON.stringify({ body: body })
         });
       }
     </script>
@@ -581,15 +616,15 @@ app.get("/admin/inbox", requireAdmin, (req, res) => {
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-      const s = io();
+      var s = io();
       s.emit('admin:join'); // rejoindre la room "admins"
 
-      s.on('admin:new_message', (evt) => {
-        const li = document.createElement('li');
+      s.on('admin:new_message', function(evt){
+        var li = document.createElement('li');
         li.innerHTML =
           '<div class="card" style="margin:8px 0;padding:12px">' +
             '<div><b>' + evt.from_username + '</b> → Conversation #' + evt.conversation_id + '</div>' +
-            '<div class="muted" style="margin:6px 0">' + evt.preview + '</div>' +
+            '<div class="muted" style="margin:6px 0">' + (evt.preview || '') + '</div>' +
             '<div><a class="btn" href="/admin/conversations/' + evt.conversation_id + '">Ouvrir la conversation</a></div>' +
           '</div>';
         document.getElementById('feed').prepend(li);
@@ -648,14 +683,14 @@ app.post("/api/conversations/:id/messages", requireLogin, (req, res) => {
       function (e) {
         if (e) return res.status(500).json({ error: "db" });
 
-        // 1) Notifier la room de la conversation
+        // 1) Notifier la room de la conversation (user + admin(s) déjà ouverts dessus)
         io.to("convo_" + cid).emit("message", {
           id: this.lastID,
           sender: req.session.user.username,
-          body
+          body: body
         });
 
-        // 2) Si message d'un utilisateur, notifier l'inbox admin
+        // 2) Si message d'un utilisateur, notifier l'inbox admin et le toast global
         if (!isAdmin) {
           io.to("admins").emit("admin:new_message", {
             conversation_id: cid,
@@ -677,7 +712,7 @@ io.on("connection", (socket) => {
     if (room) socket.join(room);
   });
 
-  // lorsqu'un admin ouvre /admin/inbox
+  // lorsqu'un admin ouvre n'importe quelle page (layout injecte admin:join) ou /admin/inbox
   socket.on("admin:join", () => {
     socket.join("admins");
   });
