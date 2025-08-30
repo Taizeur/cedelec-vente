@@ -77,7 +77,7 @@ db.serialize(() => {
 });
 
 // ---------- App/Server/Socket ----------
-const app = express();              // <= UNE seule initialisation !
+const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
@@ -141,8 +141,13 @@ function page(title, content, user) {
       <div class="header">
         <div class="brand">Cedelec Vente</div>
         <div>
-          ${user ? `<span class="badge">Connecté : ${esc(user.username)}</span> <a class="btn secondary" href="/logout">Déconnexion</a>` :
-            `<a class="btn secondary" href="/login">Connexion</a> <a class="btn" href="/register">Créer un compte</a>`}
+          ${user ? `
+            <span class="badge">Connecté : ${esc(user.username)}</span>
+            <a class="btn secondary" href="/conversations">Mes conversations</a>
+            <a class="btn secondary" href="/logout">Déconnexion</a>`
+          :
+            `<a class="btn secondary" href="/login">Connexion</a> <a class="btn" href="/register">Créer un compte</a>`
+          }
           ${user?.role === "admin" ? ` <a class="btn" href="/admin">Admin</a>` : ""}
         </div>
       </div>
@@ -266,7 +271,7 @@ app.get("/logout", (req, res) => {
   req.session.destroy(() => res.redirect("/"));
 });
 
-// ---------- Admin (ajout + gestion annonces) ----------
+// ---------- Admin (ajout + gestion + marquer vendu + supprimer) ----------
 app.get("/admin", requireAdmin, (req, res) => {
   const body = `
     <div class="grid" style="grid-template-columns:1fr 1fr">
@@ -302,21 +307,58 @@ app.post("/admin/items", requireAdmin, upload.array("images", 6), (req, res) => 
   );
 });
 
+// Liste admin + actions
 app.get("/admin/items", requireAdmin, (req, res) => {
   db.all(`SELECT * FROM items ORDER BY id DESC`, (err, rows) => {
     if (err) return res.status(500).send("Erreur DB");
     const lis = (rows || []).map(it => {
       const first = (JSON.parse(it.images_json || "[]")[0] || "");
-      return `<li style="margin:8px 0">ID ${it.id} — <b>${esc(it.title)}</b> — ${Number(it.price).toFixed(2)} €
+      return `<li style="margin:8px 0">
+        ID ${it.id} — <b>${esc(it.title)}</b> — ${Number(it.price).toFixed(2)} € 
+        <span class="badge">${esc(it.status)}</span>
         ${first ? `<img src="${esc(first)}" width="60" style="vertical-align:middle;border-radius:6px">` : ""}
-        • <a href="/item/${it.id}" target="_blank">Voir</a></li>`;
+        • <a href="/item/${it.id}" target="_blank">Voir</a>
+        • <form method="post" action="/admin/items/${it.id}/mark-sold" style="display:inline"><button class="btn secondary" type="submit">Marquer vendu</button></form>
+        • <form method="post" action="/admin/items/${it.id}/delete" style="display:inline" onsubmit="return confirm('Supprimer définitivement ?')"><button class="btn danger" type="submit">Supprimer</button></form>
+      </li>`;
     }).join("");
     const body = `<div class="card"><h1>Annonces</h1><ul>${lis || "<li>Aucune</li>"}</ul><a class="btn secondary" href="/admin">← Admin</a></div>`;
     res.send(page("Annonces", body, req.session.user));
   });
 });
 
-// ---------- Conversations / Chat ----------
+// Marquer une annonce vendue
+app.post("/admin/items/:id/mark-sold", requireAdmin, (req, res) => {
+  db.run(`UPDATE items SET status='sold' WHERE id=?`, [req.params.id], (err) => {
+    if (err) return res.status(500).send("Erreur DB");
+    res.redirect("/admin/items");
+  });
+});
+
+// Supprimer une annonce + conversations + messages
+app.post("/admin/items/:id/delete", requireAdmin, (req, res) => {
+  const itemId = Number(req.params.id);
+  db.all(`SELECT id FROM conversations WHERE item_id=?`, [itemId], (e, convs) => {
+    if (e) return res.status(500).send("Erreur DB");
+    const ids = (convs || []).map(c => c.id);
+    const delMessages = (cb) => {
+      if (!ids.length) return cb();
+      let remaining = ids.length;
+      ids.forEach(cid => {
+        db.run(`DELETE FROM messages WHERE conversation_id=?`, [cid], () => {
+          if (--remaining === 0) cb();
+        });
+      });
+    };
+    delMessages(() => {
+      db.run(`DELETE FROM conversations WHERE item_id=?`, [itemId], () => {
+        db.run(`DELETE FROM items WHERE id=?`, [itemId], () => res.redirect("/admin/items"));
+      });
+    });
+  });
+});
+
+// ---------- Conversations / Chat (création auto depuis une annonce) ----------
 app.get("/chat/:itemId", requireLogin, (req, res) => {
   const itemId = Number(req.params.itemId);
   // crée/retourne la conversation user<->item
@@ -324,16 +366,16 @@ app.get("/chat/:itemId", requireLogin, (req, res) => {
     `SELECT id FROM conversations WHERE item_id=? AND user_id=?`,
     [itemId, req.session.user.id],
     (err, row) => {
-      if (row) return renderChat(row.id);
+      if (row) return renderChat(row.id, itemId);
       db.run(
         `INSERT INTO conversations (item_id, user_id) VALUES (?,?)`,
         [itemId, req.session.user.id],
-        function () { return renderChat(this.lastID); }
+        function () { return renderChat(this.lastID, itemId); }
       );
     }
   );
 
-  function renderChat(convoId) {
+  function renderChat(convoId, itemId) {
     const body = `
       <div class="card">
         <h2>Discussion pour l'annonce #${itemId}</h2>
@@ -370,53 +412,68 @@ app.get("/chat/:itemId", requireLogin, (req, res) => {
   }
 });
 
-// Liste des conversations (admin)
-app.get("/admin/conversations", requireAdmin, (req, res) => {
-  const sql = `SELECT c.id, u.username, i.title AS item_title
+// ---------- Mes conversations (utilisateur) ----------
+app.get("/conversations", requireLogin, (req, res) => {
+  const sql = `SELECT c.id, i.title AS item_title, i.id AS item_id
                FROM conversations c
-               JOIN users u ON u.id = c.user_id
                JOIN items i ON i.id = c.item_id
+               WHERE c.user_id=?
                ORDER BY c.id DESC`;
-  db.all(sql, [], (err, rows) => {
+  db.all(sql, [req.session.user.id], (err, rows) => {
     if (err) return res.status(500).send("Erreur DB");
     const lis = (rows || [])
-      .map((r) => `<li>#${r.id} • ${esc(r.username)} → ${esc(r.item_title)} • <a href="/admin/conversations/${r.id}">Ouvrir</a></li>`)
+      .map(r => `<li><a href="/conversations/${r.id}">#${r.id} – ${esc(r.item_title)}</a> <span class="muted">(annonce #${r.item_id})</span></li>`)
       .join("");
-    const body = `<div class="card"><h1>Conversations</h1><ul>${lis || "<li>Aucune</li>"}</ul><a class="btn secondary" href="/admin">← Admin</a></div>`;
-    res.send(page("Conversations", body, req.session.user));
+    const body = `<div class="card"><h2>Mes conversations</h2><ul class="clean">${lis || "<li>Aucune conversation</li>"}</ul></div>`;
+    res.send(page("Mes conversations", body, req.session.user));
   });
 });
 
-// Vue d’une conversation (admin)
-app.get("/admin/conversations/:id", requireAdmin, (req, res) => {
+app.get("/conversations/:id", requireLogin, (req, res) => {
   const cid = Number(req.params.id);
-  const body = `
-    <div class="card">
-      <h1>Discussion #${cid}</h1>
-      <div id="messages" class="chat-box"></div>
-      <div style="margin-top:10px">
-        <input id="msg" placeholder="Votre message"><button class="btn" onclick="send()">Envoyer</button>
+  db.get(`SELECT c.*, i.title AS item_title, i.id AS item_id
+          FROM conversations c JOIN items i ON i.id=c.item_id
+          WHERE c.id=?`, [cid], (err, conv) => {
+    if (err || !conv) return res.status(404).send("Conversation introuvable");
+    if (req.session.user.role !== "admin" && conv.user_id !== req.session.user.id)
+      return res.status(403).send("Accès refusé");
+
+    const body = `
+      <div class="card">
+        <h2>Discussion #${cid} – ${esc(conv.item_title)}</h2>
+        <div id="messages" class="chat-box"></div>
+        <div style="margin-top:10px">
+          <input id="msg" placeholder="Votre message" />
+          <button class="btn" onclick="sendMsg()">Envoyer</button>
+        </div>
       </div>
-    </div>
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-      const cid=${cid};
-      const s = io();
-      s.emit('join', { room: "convo_"+cid });
-      s.on('message', (m)=>{ const div=document.getElementById('messages'); div.innerHTML += '<p><b>'+m.sender+':</b> '+m.body+'</p>'; });
-      async function send(){
-        const body = document.getElementById('msg').value.trim();
-        if(!body) return;
-        document.getElementById('msg').value='';
-        await fetch('/api/conversations/'+cid+'/messages', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ body }) });
-      }
-    </script>
-    <p><a class="btn secondary" href="/admin/conversations">← Conversations</a></p>
-  `;
-  res.send(page("Discussion admin", body, req.session.user));
+      <script src="/socket.io/socket.io.js"></script>
+      <script>
+        const socket = io();
+        const room = "convo_${cid}";
+        socket.emit('join', { room });
+        socket.on('message', m=>{
+          const box=document.getElementById('messages');
+          box.innerHTML += '<p><b>'+m.sender+':</b> '+m.body+'</p>';
+          box.scrollTop = box.scrollHeight;
+        });
+        async function sendMsg(){
+          const input=document.getElementById('msg');
+          const body=input.value.trim(); if(!body) return;
+          await fetch('/api/conversations/${cid}/messages', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ body })
+          });
+          input.value='';
+        }
+      </script>
+      <p><a class="btn secondary" href="/conversations">← Mes conversations</a></p>
+    `;
+    res.send(page("Conversation", body, req.session.user));
+  });
 });
 
-// API messages (commune user/admin)
+// ---------- API messages ----------
 app.get("/api/conversations/:id/messages", requireLogin, (req, res) => {
   const cid = Number(req.params.id);
   db.get(`SELECT * FROM conversations WHERE id=?`, [cid], (err, conv) => {
@@ -468,3 +525,4 @@ app.use((req, res) => res.status(404).send("Page introuvable"));
 
 // ---------- Start ----------
 server.listen(PORT, () => console.log(`Serveur lancé sur ${PORT}`));
+
