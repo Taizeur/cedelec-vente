@@ -358,10 +358,9 @@ app.post("/admin/items/:id/delete", requireAdmin, (req, res) => {
   });
 });
 
-// ---------- Conversations / Chat (création auto depuis une annonce) ----------
+// ---------- Chat depuis une annonce : crée / retrouve la conversation ----------
 app.get("/chat/:itemId", requireLogin, (req, res) => {
   const itemId = Number(req.params.itemId);
-  // crée/retourne la conversation user<->item
   db.get(
     `SELECT id FROM conversations WHERE item_id=? AND user_id=?`,
     [itemId, req.session.user.id],
@@ -388,18 +387,32 @@ app.get("/chat/:itemId", requireLogin, (req, res) => {
       <script src="/socket.io/socket.io.js"></script>
       <script>
         const socket = io();
-        const room = "convo_${convoId}";
-        const me = ${req.session.user.id};
+        const convoId = ${convoId};
+        const room = "convo_" + convoId;
         socket.emit('join', { room });
+
+        async function loadHistory(){
+          const res = await fetch('/api/conversations/' + convoId + '/messages');
+          const msgs = await res.json();
+          const box = document.getElementById('messages');
+          box.innerHTML = '';
+          for (const m of msgs){
+            box.innerHTML += '<p><b>' + (m.sender_name || 'Utilisateur') + ':</b> ' + m.body + '</p>';
+          }
+          box.scrollTop = box.scrollHeight;
+        }
+        loadHistory();
+
         socket.on('message', m=>{
           const box=document.getElementById('messages');
-          box.innerHTML += '<p><b>'+m.sender+':</b> '+m.body+'</p>';
+          box.innerHTML += '<p><b>'+ (m.sender || 'Utilisateur') +':</b> '+m.body+'</p>';
           box.scrollTop = box.scrollHeight;
         });
+
         async function sendMsg(){
           const input=document.getElementById('msg');
           const body=input.value.trim(); if(!body) return;
-          await fetch('/api/conversations/${convoId}/messages', {
+          await fetch('/api/conversations/' + convoId + '/messages', {
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({ body })
           });
@@ -444,27 +457,42 @@ app.get("/conversations/:id", requireLogin, (req, res) => {
         <div id="messages" class="chat-box"></div>
         <div style="margin-top:10px">
           <input id="msg" placeholder="Votre message" />
-          <button class="btn" onclick="sendMsg()">Envoyer</button>
+          <button class="btn" onclick="send()">Envoyer</button>
         </div>
       </div>
       <script src="/socket.io/socket.io.js"></script>
       <script>
-        const socket = io();
-        const room = "convo_${cid}";
-        socket.emit('join', { room });
-        socket.on('message', m=>{
-          const box=document.getElementById('messages');
-          box.innerHTML += '<p><b>'+m.sender+':</b> '+m.body+'</p>';
+        const s = io();
+        const cid = ${cid};
+        const room = "convo_" + cid;
+        s.emit('join', { room });
+
+        async function loadHistory(){
+          const res = await fetch('/api/conversations/' + cid + '/messages');
+          const msgs = await res.json();
+          const box = document.getElementById('messages');
+          box.innerHTML = '';
+          for (const m of msgs){
+            box.innerHTML += '<p><b>' + (m.sender_name || 'Utilisateur') + ':</b> ' + m.body + '</p>';
+          }
           box.scrollTop = box.scrollHeight;
+        }
+        loadHistory();
+
+        s.on('message', (m)=>{
+          const div=document.getElementById('messages');
+          div.innerHTML += '<p><b>'+ (m.sender || 'Utilisateur') +':</b> '+m.body+'</p>';
+          div.scrollTop = div.scrollHeight;
         });
-        async function sendMsg(){
-          const input=document.getElementById('msg');
-          const body=input.value.trim(); if(!body) return;
-          await fetch('/api/conversations/${cid}/messages', {
+
+        async function send(){
+          const input = document.getElementById('msg');
+          const body = input.value.trim(); if(!body) return;
+          input.value='';
+          await fetch('/api/conversations/' + cid + '/messages', {
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({ body })
           });
-          input.value='';
         }
       </script>
       <p><a class="btn secondary" href="/conversations">← Mes conversations</a></p>
@@ -473,21 +501,101 @@ app.get("/conversations/:id", requireLogin, (req, res) => {
   });
 });
 
-// ---------- API messages ----------
+// ---------- Admin: liste et vue des conversations ----------
+app.get("/admin/conversations", requireAdmin, (req, res) => {
+  const sql = `SELECT c.id, u.username, i.title AS item_title
+               FROM conversations c
+               JOIN users u ON u.id = c.user_id
+               JOIN items i ON i.id = c.item_id
+               ORDER BY c.id DESC`;
+  db.all(sql, [], (err, rows) => {
+    if (err) return res.status(500).send("Erreur DB");
+    const lis = (rows || [])
+      .map((r) => `<li>#${r.id} • ${esc(r.username)} → ${esc(r.item_title)} • <a href="/admin/conversations/${r.id}">Ouvrir</a></li>`)
+      .join("");
+    const body = `<div class="card"><h1>Conversations</h1><ul>${lis || "<li>Aucune</li>"}</ul><a class="btn secondary" href="/admin">← Admin</a></div>`;
+    res.send(page("Conversations", body, req.session.user));
+  });
+});
+
+app.get("/admin/conversations/:id", requireAdmin, (req, res) => {
+  const cid = Number(req.params.id);
+  const body = `
+    <div class="card">
+      <h1>Discussion #${cid}</h1>
+      <div id="messages" class="chat-box"></div>
+      <div style="margin-top:10px">
+        <input id="msg" placeholder="Votre message"><button class="btn" onclick="send()">Envoyer</button>
+      </div>
+    </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const s = io();
+      const cid = ${cid};
+      const room = "convo_" + cid;
+      s.emit('join', { room });
+
+      async function loadHistory(){
+        const res = await fetch('/api/conversations/' + cid + '/messages');
+        const msgs = await res.json();
+        const box = document.getElementById('messages');
+        box.innerHTML = '';
+        for (const m of msgs){
+          box.innerHTML += '<p><b>' + (m.sender_name || 'Utilisateur') + ':</b> ' + m.body + '</p>';
+        }
+        box.scrollTop = box.scrollHeight;
+      }
+      loadHistory();
+
+      s.on('message', (m)=>{
+        const div=document.getElementById('messages');
+        div.innerHTML += '<p><b>'+ (m.sender || 'Utilisateur') +':</b> '+m.body+'</p>';
+        div.scrollTop = div.scrollHeight;
+      });
+
+      async function send(){
+        const input = document.getElementById('msg');
+        const body = input.value.trim(); if(!body) return;
+        input.value='';
+        await fetch('/api/conversations/' + cid + '/messages', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ body })
+        });
+      }
+    </script>
+    <p><a class="btn secondary" href="/admin/conversations">← Conversations</a></p>
+  `;
+  res.send(page("Discussion admin", body, req.session.user));
+});
+
+// ---------- API messages (avec sender_name + historique) ----------
 app.get("/api/conversations/:id/messages", requireLogin, (req, res) => {
   const cid = Number(req.params.id);
   db.get(`SELECT * FROM conversations WHERE id=?`, [cid], (err, conv) => {
     if (err || !conv) return res.status(404).json({ error: "not_found" });
     if (req.session.user.role !== "admin" && conv.user_id !== req.session.user.id)
       return res.status(403).json({ error: "forbidden" });
-    db.all(
-      `SELECT m.*, (m.sender_id=?) AS mine FROM messages m WHERE conversation_id=? ORDER BY id ASC`,
-      [req.session.user.id, cid],
-      (e, rows) => {
-        if (e) return res.status(500).json({ error: "db" });
-        res.json(rows.map((r) => ({ id: r.id, body: r.body, mine: !!r.mine, created_at: r.created_at })));
-      }
-    );
+
+    const sql = `
+      SELECT m.id, m.body, m.created_at, m.sender_id,
+             u.username AS sender_name,
+             (m.sender_id = ?) AS mine
+      FROM messages m
+      JOIN users u ON u.id = m.sender_id
+      WHERE m.conversation_id = ?
+      ORDER BY m.id ASC
+    `;
+    db.all(sql, [req.session.user.id, cid], (e, rows) => {
+      if (e) return res.status(500).json({ error: "db" });
+      res.json(rows.map(r => ({
+        id: r.id,
+        body: r.body,
+        mine: !!r.mine,
+        sender_id: r.sender_id,
+        sender_name: r.sender_name,
+        created_at: r.created_at
+      })));
+    });
   });
 });
 
