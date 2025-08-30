@@ -144,6 +144,7 @@ function page(title, content, user) {
           ${user ? `
             <span class="badge">Connecté : ${esc(user.username)}</span>
             <a class="btn secondary" href="/conversations">Mes conversations</a>
+            ${user.role === "admin" ? `<a class="btn secondary" href="/admin/inbox">Inbox</a>` : ``}
             <a class="btn secondary" href="/logout">Déconnexion</a>`
           :
             `<a class="btn secondary" href="/login">Connexion</a> <a class="btn" href="/register">Créer un compte</a>`
@@ -289,6 +290,7 @@ app.get("/admin", requireAdmin, (req, res) => {
         <h3>Liens rapides</h3>
         <p><a class="btn secondary" href="/admin/items">Gérer les annonces</a></p>
         <p><a class="btn secondary" href="/admin/conversations">Conversations</a></p>
+        <p><a class="btn secondary" href="/admin/inbox">Inbox</a></p>
       </div>
     </div>`;
   res.send(page("Admin", body, req.session.user));
@@ -568,6 +570,35 @@ app.get("/admin/conversations/:id", requireAdmin, (req, res) => {
   res.send(page("Discussion admin", body, req.session.user));
 });
 
+// ---------- Inbox admin (notifications temps réel) ----------
+app.get("/admin/inbox", requireAdmin, (req, res) => {
+  const body = `
+    <div class="card">
+      <h1>Inbox (temps réel)</h1>
+      <p class="muted">Les nouveaux messages utilisateurs apparaîtront ici automatiquement.</p>
+      <ul id="feed" class="clean"></ul>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const s = io();
+      s.emit('admin:join'); // rejoindre la room "admins"
+
+      s.on('admin:new_message', (evt) => {
+        const li = document.createElement('li');
+        li.innerHTML =
+          '<div class="card" style="margin:8px 0;padding:12px">' +
+            '<div><b>' + evt.from_username + '</b> → Conversation #' + evt.conversation_id + '</div>' +
+            '<div class="muted" style="margin:6px 0">' + evt.preview + '</div>' +
+            '<div><a class="btn" href="/admin/conversations/' + evt.conversation_id + '">Ouvrir la conversation</a></div>' +
+          '</div>';
+        document.getElementById('feed').prepend(li);
+      });
+    </script>
+  `;
+  res.send(page("Inbox admin", body, req.session.user));
+});
+
 // ---------- API messages (avec sender_name + historique) ----------
 app.get("/api/conversations/:id/messages", requireLogin, (req, res) => {
   const cid = Number(req.params.id);
@@ -606,7 +637,9 @@ app.post("/api/conversations/:id/messages", requireLogin, (req, res) => {
 
   db.get(`SELECT * FROM conversations WHERE id=?`, [cid], (err, conv) => {
     if (err || !conv) return res.status(404).json({ error: "not_found" });
-    if (req.session.user.role !== "admin" && conv.user_id !== req.session.user.id)
+
+    const isAdmin = req.session.user.role === "admin";
+    if (!isAdmin && conv.user_id !== req.session.user.id)
       return res.status(403).json({ error: "forbidden" });
 
     db.run(
@@ -614,7 +647,24 @@ app.post("/api/conversations/:id/messages", requireLogin, (req, res) => {
       [cid, req.session.user.id, body],
       function (e) {
         if (e) return res.status(500).json({ error: "db" });
-        io.to("convo_" + cid).emit("message", { id: this.lastID, sender: req.session.user.username, body });
+
+        // 1) Notifier la room de la conversation
+        io.to("convo_" + cid).emit("message", {
+          id: this.lastID,
+          sender: req.session.user.username,
+          body
+        });
+
+        // 2) Si message d'un utilisateur, notifier l'inbox admin
+        if (!isAdmin) {
+          io.to("admins").emit("admin:new_message", {
+            conversation_id: cid,
+            from_user_id: req.session.user.id,
+            from_username: req.session.user.username,
+            preview: body.slice(0, 120)
+          });
+        }
+
         res.json({ ok: true });
       }
     );
@@ -626,6 +676,11 @@ io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
     if (room) socket.join(room);
   });
+
+  // lorsqu'un admin ouvre /admin/inbox
+  socket.on("admin:join", () => {
+    socket.join("admins");
+  });
 });
 
 // ---------- 404 ----------
@@ -633,4 +688,3 @@ app.use((req, res) => res.status(404).send("Page introuvable"));
 
 // ---------- Start ----------
 server.listen(PORT, () => console.log(`Serveur lancé sur ${PORT}`));
-
