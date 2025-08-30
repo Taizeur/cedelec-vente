@@ -8,7 +8,7 @@ const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
 const http = require("http");
 const { Server } = require("socket.io");
-
+app.use(express.static(path.join(__dirname, "public")));
 const PORT = process.env.PORT || 3000;
 const DB_FILE = process.env.DB_FILE || "/tmp/data.sqlite";
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "/tmp/uploads";
