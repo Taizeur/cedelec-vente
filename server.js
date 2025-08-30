@@ -8,13 +8,38 @@ const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
 const http = require("http");
 const { Server } = require("socket.io");
-app.use(express.static(path.join(__dirname, "public")));
+
+// ---------- Config ----------
 const PORT = process.env.PORT || 3000;
 const DB_FILE = process.env.DB_FILE || "/tmp/data.sqlite";
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "/tmp/uploads";
 const SESSION_SECRET = process.env.SESSION_SECRET || "change-me-please";
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// ---------- DB init (inchangé) ----------
+// ... (la partie CREATE TABLES etc. reste identique)
+
+// ---------- App/Server/Socket : CRÉER AVANT d’utiliser app.use ----------
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+// ---------- Middlewares : APRÈS la création de app ----------
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public"))); // <-- OK ici maintenant
+app.use("/uploads", express.static(UPLOAD_DIR));
+
+app.use(
+  session({
+    store: new SQLiteStore({ db: "sessions.sqlite", dir: path.dirname(DB_FILE) }),
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 30 },
+  })
+);
 
 const db = new sqlite3.Database(DB_FILE);
 db.serialize(() => {
